@@ -230,30 +230,40 @@ class TrilinearHiggsKappaVKappaF(LHCHCGBaseModel):
 
 
 def getGenProdDecMode(bin, process, options):
-    """Return a triple of (production, decay, energy)"""
-    processSource = process
-    decaySource = options.fileName + ":" + bin  # by default, decay comes from the datacard name or bin label
-    if "_" in process:
-        if "gen" in process:
-            (processSource, decaySource) = (
-                process.split("_")[0] + "_" + process.split("_")[1],
-                process.split("_")[-1],
-            )
-        else:
-            raise RuntimeError("Error - must specify a generator bin to match C1 amplitude")
-        if decaySource not in ALL_HIGGS_DECAYS:
-            print(
-                "ERROR",
-                "Validation Error: signal process %s has a postfix %s which is not one recognized higgs decay modes (%s)"
-                % (process, decaySource, ALL_HIGGS_DECAYS),
-            )
-            # raise RuntimeError, "Validation Error: signal process %s has a postfix %s which is not one recognized higgs decay modes (%s)" % (process,decaySource,ALL_HIGGS_DECAYS)
-    if "gen" in processSource:
-        if processSource.split("_")[0] not in ALL_HIGGS_PROD:
-            raise RuntimeError("Validation Error: signal process %s not among the allowed ones." % processSource.split("_")[0])
-    else:
-        if processSource not in ALL_HIGGS_PROD:
-            raise RuntimeError("Validation Error: signal process %s not among the allowed ones." % processSource)
+    """Return a triple of (production, category, decay, energy)"""
+    processSource = process.split("_")[0]
+    # print("processSource: ", processSource)
+    categorySource = bin
+    # print("categorySource: ", categorySource)
+    decaySource = options.fileName + ":" + bin + ":" + process # by default, decay comes from the datacard name or bin label or process label
+    # print("decaySource: ", decaySource)
+    # print("ALL_HIGGS_PROD:", ALL_HIGGS_PROD)
+    # # How it used to be
+    # if "_" in process:
+    #     if "gen" in process:
+    #         processSource, decaySource = (
+    #             process.split("_")[0] + "_" + process.split("_")[1],
+    #             process.split("_")[-1],
+    #         )
+    #     else:
+    #         raise RuntimeError("Error - must specify a generator bin to match C1 amplitude")
+    #     if decaySource not in ALL_HIGGS_DECAYS:
+    #         print(
+    #             "ERROR",
+    #             "Validation Error: signal process %s has a postfix %s which is not one recognized higgs decay modes (%s)"
+    #             % (process, decaySource, ALL_HIGGS_DECAYS),
+    #         )
+    #         # raise RuntimeError, "Validation Error: signal process %s has a postfix %s which is not one recognized higgs decay modes (%s)" % (process,decaySource,ALL_HIGGS_DECAYS)
+    # if "gen" in processSource:
+    #     if processSource.split("_")[0] not in ALL_HIGGS_PROD:
+    #         raise RuntimeError("Validation Error: signal process %s not among the allowed ones." % processSource.split("_")[0])
+    # else:
+    #     if processSource not in ALL_HIGGS_PROD:
+    #         raise RuntimeError("Validation Error: signal process %s not among the allowed ones." % processSource)
+    # #
+    #
+    if processSource not in ALL_HIGGS_PROD:
+        raise RuntimeError("Validation Error: signal process %s starts with %s, which is not in ALL_HIGGS_PROD" % (process, processSource))
     #
     foundDecay = None
     for D in ALL_HIGGS_DECAYS:
@@ -280,8 +290,7 @@ def getGenProdDecMode(bin, process, options):
         foundEnergy = "14TeV"  ## if using 81x, chances are its 14 TeV
         # print "Warning: decay string %s does not contain any known energy, assuming %s" % (decaySource, foundEnergy)
     #
-    return (processSource, foundDecay, foundEnergy)
-
+    return (processSource, categorySource, foundDecay, foundEnergy)
 
 class TrilinearHiggsDifferential(PhysicsModel):
     "Float independently cross sections and branching ratios"
@@ -304,7 +313,7 @@ class TrilinearHiggsDifferential(PhysicsModel):
         """Create POI and other parameters, and define the POI set."""
 
         # trilinear Higgs couplings modified
-        self.modelBuilder.doVar("k_lambda[1,-20.,20.]")
+        self.modelBuilder.doVar("k_lambda[1,-60.,100.]")
         self.poiNames = "k_lambda"
         self.modelBuilder.doSet("POI", self.poiNames)
 
@@ -369,7 +378,7 @@ class TrilinearHiggsDifferential(PhysicsModel):
         "Split in production and decay, and call getHiggsSignalYieldScale; return 1 for backgrounds"
         if not self.DC.isSignal[process]:
             return 1
-        (processSource, foundDecay, foundEnergy) = getGenProdDecMode(bin, process, self.options)
+        (processSource, categorySource, foundDecay, foundEnergy) = getGenProdDecMode(bin, process, self.options)
         if foundDecay != "hgg":
             raise RuntimeError("Only decay H->gamma gamma supported right now in differential model")
 
@@ -664,6 +673,121 @@ class TrilinearHiggsKappaVKappaFSTXS12(LHCHCGBaseModel):
         return XSBRscaling
 
 
+# For the ttHyy kl analysis - adapting based on the TrilinearHiggsDifferential() class
+class TrilinearHiggsDifferential_ttH(PhysicsModel):
+    "Float independently cross sections and branching ratios"
+
+    def __init__(self):
+        PhysicsModel.__init__(self)  # not using 'super(x,self).__init__' since I don't understand it
+        self.mHRange = []
+        self.poiNames = []
+        self.C1_gen_avg_cat_json = ""
+
+    def setPhysicsOptions(self, physOptions):
+        for po in physOptions:
+            if po.startswith("higgsMassRange="):
+                self.mHRange = po.replace("higgsMassRange=", "").split(",")
+                if len(self.mHRange) != 2:
+                    raise RuntimeError("Higgs mass range definition requires two extrema")
+                elif float(self.mHRange[0]) >= float(self.mHRange[1]):
+                    raise RuntimeError("Extrema for Higgs mass range defined with inverterd order. Second must be larger the first")
+            if po.startswith("C1_gen_avg_cat_json="):
+                self.C1_gen_avg_cat_json = po.replace("C1_gen_avg_cat_json=", "").strip('"')
+
+    def doParametersOfInterest(self):
+        """Create POI and other parameters, and define the POI set."""
+
+        # trilinear Higgs couplings modified
+        self.modelBuilder.doVar("k_lambda[1,-60.,100.]")
+        self.poiNames = "k_lambda"
+        self.modelBuilder.doSet("POI", self.poiNames)
+
+        # Scaling: define how cross section scales for each ttH category
+        # read C1 values from file
+        datadir = os.environ["CMSSW_BASE"] + "/src/HiggsAnalysis/CombinedLimit/data/"
+        path_C1 = datadir + "trilinearHiggsModel/" + self.C1_gen_avg_cat_json
+        if self.C1_gen_avg_cat_json == "":
+            raise RuntimeError(f"Please provide name JSON file for avg C1 gen of each category in {path_C1}")
+        else:
+            if not os.path.exists(path_C1):
+                raise RuntimeError("Provided JSON path does not exist: %s" % self.path_C1_gen_avg_cat)
+            with open(path_C1, "r") as f:
+                C1_gen_cats = json.load(f)
+        # Remove "background" category if it exists!
+        C1_gen_cats = {k: v for k, v in C1_gen_cats.items() if k.lower() != "background"}
+
+        # Define dZH constant variable
+        dZH = -1.536e-3
+
+        # Loop over processes*gen bins in map to define how cross-section scales
+        for cat, c1_avg_cat in C1_gen_cats.items():
+            self.modelBuilder.factory_(
+                'expr::XSscal_%s("(1+@0*%g+%g)/((1-(@0*@0-1)*%g)*(1+%g+%g))",k_lambda)' % (cat, c1_avg_cat, dZH, dZH, c1_avg_cat, dZH)
+            )
+
+        # now do the scaling - taken from Tab. 1 of https://arxiv.org/pdf/1607.04251v1.pdf
+        cGammap = {
+            "hgg": 0.49e-2,
+            "hzz": 0.83e-2,
+            "hww": 0.73e-2,
+            "hgluglu": 0.66e-2,
+            "htt": 0,
+            "hbb": 0,
+            "hcc": 0,
+            "hmm": 0,
+        }
+        cGTot = 2.5e-3
+
+        # for dec in ["hgg","hzz","hww","hgluglu","htt","hbb","hcc","hmm"]: # only do hgg for now
+        for dec in ["hgg"]:  # only do hgg for now
+            valC1 = cGammap[dec]
+            self.modelBuilder.factory_('expr::BRscal_%s("1+((@0-1)*(%g-%g)/(1+(@0-1)*%g))",k_lambda)' % (dec, valC1, cGTot, cGTot))
+            for cat in C1_gen_cats:
+                self.modelBuilder.factory_('expr::XSBRscal_%s("@0*@1",XSscal_%s,BRscal_%s)' % (cat + "_" + dec, cat, dec))
+                print("Made - ", "XSBRscal_%s" % (cat + "_" + dec))
+
+    def getYieldScale(self, bin, process):
+        "Split in production and decay, and call getHiggsSignalYieldScale; return 1 for backgrounds"
+        if not self.DC.isSignal[process]:
+            return 1
+        (processSource, categorySource, foundDecay, foundEnergy) = getGenProdDecMode(bin, process, self.options)
+        if "ttH" not in processSource: # kl dependence only for ttH processes in the different categories
+            return 1
+        #
+        if foundDecay != "hgg":
+            raise RuntimeError("Only decay H->gamma gamma supported right now in differential model")
+
+        print(
+            "Will scale ",
+            bin,
+            process,
+            " by ",
+            self.getHiggsSignalYieldScale(categorySource, foundDecay, foundEnergy),
+        )
+        return self.getHiggsSignalYieldScale(categorySource, foundDecay, foundEnergy)
+
+    def getHiggsSignalYieldScale(self, category, decay, energy):
+        name = "XSBRscal_%s_%s" % (category, decay)
+        print(name)
+        # If name has been defined in doParameterOfInterest()
+        if self.modelBuilder.out.function(name) == None:
+            print("DEBUG: Cat x signal has not been given a scale factor")
+            # return 0
+        # else:
+        #  print '[LHC-CMS Trilinear]', name, ": ", self.modelBuilder.out.function(name).Print("")
+
+        return name
+
+
+
 trilinearHiggskVkF = TrilinearHiggsKappaVKappaF()
 trilinearHiggsDifferential = TrilinearHiggsDifferential()
+trilinearHiggsDifferential_ttH = TrilinearHiggsDifferential_ttH() # ttHyy kl analysis
 TrilinearHiggsKappaVKappaFSTXS12 = TrilinearHiggsKappaVKappaFSTXS12()
+
+
+# Things to do:
+# switch to C1 gen avg of categories rather than processes
+# figure out how to save the C1 gen avg dict json file (at which stage)
+# Change so that the other processes are not kl dependent - just add them as gaussian nuisance terms with mus
+# Have the overall shape thing (so remove the overall mu dependency)

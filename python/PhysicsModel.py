@@ -281,6 +281,7 @@ SM_HIGG_DECAYS = ["hww", "hzz", "hgg", "htt", "hbb", "hzg", "hmm", "hcc", "hglug
 SM_HIGG_PROD = [
     "ggH",
     "qqH",
+    "VBF",
     "VH",
     "WH",
     "ZH",

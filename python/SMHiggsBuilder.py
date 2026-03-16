@@ -24,7 +24,7 @@ class SMHiggsBuilder:
         self.xspath = os.path.join(self.datadir, "sm/xs", energy)
         if process == "ggH":
             self.textToSpline("SM_XS_ggH_" + energy, os.path.join(self.xspath, energy + "-ggH.txt"))
-        if process == "qqH":
+        if process == "qqH" or process == "VBF":
             self.textToSpline("SM_XS_qqH_" + energy, os.path.join(self.xspath, energy + "-vbfH.txt"))
         if process == "ttH":
             self.textToSpline("SM_XS_ttH_" + energy, os.path.join(self.xspath, energy + "-ttH.txt"))
