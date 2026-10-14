@@ -14,6 +14,28 @@ from HiggsAnalysis.CombinedLimit.STXSModels import CMS_to_LHCHCG_DecSimple, getS
 
 LHCHCG_DecSimple_to_CMS = dict(list(zip(list(CMS_to_LHCHCG_DecSimple.values()), list(CMS_to_LHCHCG_DecSimple.keys()))))
 
+# Raw process names produced by the kl_C1reco/kl_pt datacards (HiggsDNA-based naming), not
+# covered by the shared SM_HIGG_PROD list in PhysicsModel.py. Kept local to this file so we
+# don't touch the shared list used by unrelated official combine models.
+EXTRA_HIGGS_PROD = [
+    "GG2H",
+    "TTH",
+    "WPLUSH",
+    "WMINUSH",
+    "WPLUSH2HLNU",
+    "WMINUSH2HLNU",
+    "WPLUSH2HQQ",
+    "WMINUSH2HQQ",
+    "ZH2HLL",
+    "ZH2HNUNU",
+    "ZH2HQQ",
+    # do not have these processes in yet for the C1 binning analysis, just for the STXS comparison
+    "THQ", "THQ2HQQ", "THQ2HLNU",
+    "THW", 
+    "GG2HLL", "GG2HNUNU", "GG2HQQ",
+    "BBH"
+]
+
 
 class TrilinearHiggsKappaVKappaF(LHCHCGBaseModel):
     "Assume the SM coupling but leave the Higgs boson mass floating."
@@ -262,7 +284,7 @@ def getGenProdDecMode(bin, process, options):
     #         raise RuntimeError("Validation Error: signal process %s not among the allowed ones." % processSource)
     # #
     #
-    if processSource not in ALL_HIGGS_PROD:
+    if processSource not in ALL_HIGGS_PROD and processSource not in EXTRA_HIGGS_PROD:
         raise RuntimeError("Validation Error: signal process %s starts with %s, which is not in ALL_HIGGS_PROD" % (process, processSource))
     #
     foundDecay = None
@@ -751,7 +773,7 @@ class TrilinearHiggsDifferential_ttH(PhysicsModel):
         if not self.DC.isSignal[process]:
             return 1
         (processSource, categorySource, foundDecay, foundEnergy) = getGenProdDecMode(bin, process, self.options)
-        if "ttH" not in processSource: # kl dependence only for ttH processes in the different categories
+        if "ttH" not in processSource and "TTH" not in processSource: # kl dependence only for ttH processes in the different categories
             return 1
         #
         if foundDecay != "hgg":
@@ -778,16 +800,115 @@ class TrilinearHiggsDifferential_ttH(PhysicsModel):
 
         return name
 
+# I am creating this class to do a Run3 STXS Hyy comparison with my C1-binning
+class TrilinearHiggsDifferential_ttH_STXScomparison(PhysicsModel):
+    "Float independently cross sections and branching ratios based on ttH STXS process names"
+
+    def __init__(self):
+        PhysicsModel.__init__(self)
+        self.mHRange = []
+        self.poiNames = []
+        self.C1_stxs_json = ""
+
+    def setPhysicsOptions(self, physOptions):
+        for po in physOptions:
+            if po.startswith("higgsMassRange="):
+                self.mHRange = po.replace("higgsMassRange=", "").split(",")
+                if len(self.mHRange) != 2:
+                    raise RuntimeError("Higgs mass range definition requires two extrema")
+                elif float(self.mHRange[0]) >= float(self.mHRange[1]):
+                    raise RuntimeError("Extrema for Higgs mass range defined with inverted order.")
+            if po.startswith("C1_stxs_json="):
+                self.C1_stxs_json = po.replace("C1_stxs_json=", "").strip('"')
+
+    def doParametersOfInterest(self):
+        """Create POI and other parameters, and define the POI set."""
+
+        # Trilinear Higgs coupling modifier
+        self.modelBuilder.doVar("k_lambda[1,-60.,100.]")
+        self.poiNames = "k_lambda"
+        self.modelBuilder.doSet("POI", self.poiNames)
+
+        # Read C1 values for each ttH STXS process from JSON
+        datadir = os.environ["CMSSW_BASE"] + "/src/HiggsAnalysis/CombinedLimit/data/"
+        path_C1 = datadir + "trilinearHiggsModel/" + self.C1_stxs_json
+        if self.C1_stxs_json == "":
+            raise RuntimeError(f"Please provide name of JSON file for ttH STXS C1 values using C1_stxs_json=...")
+        else:
+            if not os.path.exists(path_C1):
+                raise RuntimeError("Provided JSON path does not exist: %s" % path_C1)
+            with open(path_C1, "r") as f:
+                c1_stxs_dict = json.load(f)
+
+        # Define dZH constant variable
+        dZH = -1.536e-3
+
+        # Loop over each ttH process name in the JSON (e.g., TTH_PTH_0_60, TTH_PTH_60_120, etc.)
+        for proc_name, c1_val in c1_stxs_dict.items():
+            self.modelBuilder.factory_(
+                'expr::XSscal_%s("(1+@0*%g+%g)/((1-(@0*@0-1)*%g)*(1+%g+%g))",k_lambda)' % (proc_name, c1_val, dZH, dZH, c1_val, dZH)
+            )
+
+        # Branching ratio scaling for hgg
+        cGammap = {"hgg": 0.49e-2}
+        cGTot = 2.5e-3
+
+        for dec in ["hgg"]:
+            valC1 = cGammap[dec]
+            self.modelBuilder.factory_('expr::BRscal_%s("1+((@0-1)*(%g-%g)/(1+(@0-1)*%g))",k_lambda)' % (dec, valC1, cGTot, cGTot))
+            
+            # Combine XS scale and BR scale for each process
+            for proc_name in c1_stxs_dict.keys():
+                self.modelBuilder.factory_('expr::XSBRscal_%s("@0*@1",XSscal_%s,BRscal_%s)' % (proc_name + "_" + dec, proc_name, dec))
+                print("Made - ", "XSBRscal_%s" % (proc_name + "_" + dec))
+
+    def getYieldScale(self, bin, process):
+        "Match scaling based on the ttH process name rather than the bin/category"
+        if not self.DC.isSignal[process]:
+            return 1
+        
+        (processSource, categorySource, foundDecay, foundEnergy) = getGenProdDecMode(bin, process, self.options)
+        
+        # Only apply kl scaling to ttH processes
+        if "ttH" not in processSource and "TTH" not in processSource: 
+            return 1
+            
+        if foundDecay != "hgg":
+            raise RuntimeError("Only decay H->gamma gamma supported right now in differential model")
+
+        # Find which registered ttH process key matches the current datacard process name
+        # e.g., if process is "TTH_PTH_60_120_postEE_hgg", match it to "TTH_PTH_60_120"
+        matched_proc_key = None
+        # We can dynamically check against the names we built, or pass them. 
+        # Alternatively, let's extract it cleanly:
+        for known_key in self.get_known_process_keys():
+            if known_key in process:
+                matched_proc_key = known_key
+                break
+
+        if not matched_proc_key:
+            raise RuntimeError(f"Could not match process '{process}' to any known ttH STXS C1 process keys!")
+
+        print("Will scale bin", bin, "process", process, "using process key", matched_proc_key)
+        return self.getHiggsSignalYieldScale(matched_proc_key, foundDecay, foundEnergy)
+
+    def get_known_process_keys(self):
+        # Helper to re-load or access the JSON keys for matching
+        datadir = os.environ["CMSSW_BASE"] + "/src/HiggsAnalysis/CombinedLimit/data/"
+        path_C1 = datadir + "trilinearHiggsModel/" + self.C1_stxs_json
+        with open(path_C1, "r") as f:
+            return list(json.load(f).keys())
+
+    def getHiggsSignalYieldScale(self, proc_key, decay, energy):
+        name = "XSBRscal_%s_%s" % (proc_key, decay)
+        if self.modelBuilder.out.function(name) == None:
+            print("DEBUG: Process x signal has not been given a scale factor for key:", proc_key)
+        return name
+
 
 
 trilinearHiggskVkF = TrilinearHiggsKappaVKappaF()
 trilinearHiggsDifferential = TrilinearHiggsDifferential()
 trilinearHiggsDifferential_ttH = TrilinearHiggsDifferential_ttH() # ttHyy kl analysis
+trilinearHiggsDifferential_ttH_STXScomparison = TrilinearHiggsDifferential_ttH_STXScomparison() # ttHyy kl analysis: comparison with Run3HyySTXS
 TrilinearHiggsKappaVKappaFSTXS12 = TrilinearHiggsKappaVKappaFSTXS12()
-
-
-# Things to do:
-# switch to C1 gen avg of categories rather than processes
-# figure out how to save the C1 gen avg dict json file (at which stage)
-# Change so that the other processes are not kl dependent - just add them as gaussian nuisance terms with mus
-# Have the overall shape thing (so remove the overall mu dependency)
